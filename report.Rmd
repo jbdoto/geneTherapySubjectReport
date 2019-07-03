@@ -1,0 +1,536 @@
+---
+fontsize: 12pt
+geometry: margin=0.50in
+subparagraph: yes
+params: 
+    title: "title"
+    date:  "0000-00-00"
+title: "`r params$title`"
+date:  "`r params$date`"
+header-includes:
+   - \usepackage{titlesec}
+   - \usepackage{array}
+   - \usepackage{makecell}
+   - \usepackage{booktabs}
+   - \usepackage{float}
+   - \usepackage{pdflscape}
+   - \newcommand{\blandscape}{\begin{landscape}}
+   - \newcommand{\elandscape}{\end{landscape}}
+output:
+  pdf_document:
+    toc: true
+    keep_tex: no
+    latex_engine: xelatex
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(vegan)
+library(knitr)
+library(xtable)
+library(ggforce)
+library(gridExtra)
+library(RColorBrewer)
+library(grDevices)
+#library(wordcloud)
+library(png)
+library(grid)
+library(pander)
+library(tidyverse)
+library(kableExtra)
+options(stringsAsFactors = FALSE)
+
+cellTypesOfInterest <- args$cellTypes
+
+englishList <- function(v, conjunction = 'and'){
+  if(length(v) == 1) return(v)
+  if(length(v) == 2) return(paste(v, collapse = paste0(' ', conjunction, ' '))) 
+  paste0(paste0(v[1:length(v)-1], collapse = ', '), paste0(' ', conjunction, ' '), v[length(v)])
+}
+
+ppNum <- function(n){ if(is.na(n)) return('na'); format(n, big.mark=",", scientific=FALSE, trim=TRUE) }
+```
+
+\titleformat{\section}{       \fontsize{26pt}{10pt}\selectfont}{}{0em}{}
+\titleformat{\subsection}{    \fontsize{16pt}{10pt}\selectfont}{}{0em}{}
+\titleformat{\subsubsection}{ \fontsize{12pt}{10pt}\selectfont}{}{0em}{}
+\titleformat{\paragraph}{     \fontsize{ 8pt}{ 8pt}\selectfont}{}{0em}{}
+\titleformat{\subparagraph}{  \fontsize{ 6pt}{ 6pt}\selectfont}{}{0em}{}
+
+\newpage
+
+# Summary 
+
+## Is there a rich population of progenitor cells delivering mature cells to the periphery?    
+
+To provide a simple measure, we ask whether there are $\geq$ 1000 descendants of independent progenitors 
+(i.e. unique integration sites) in minimally fractionated cell specimens (`r englishList(args$richPopCells)`). 
+Cell specimens that pass these criteria are operationally designated Rich.
+
+\vspace{0.25cm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=2.8, results='asis'}
+if(length(base::intersect(toupper(args$richPopCells), toupper(unique(intSites$cellType)))) == 0){
+  richTable <- data.frame()
+  cat(paste0('\\vspace{0.5cm}\n**No ', englishList(args$richPopCells, conjunction = 'or'), ' samples were for analyzed from this subject.**\n'))
+} else {
+  chao1 <- function(n) as.integer(estimateR(n, index='chao')[2])
+  
+  richTable <- 
+    dplyr::filter(d, toupper(cellType) %in% toupper(args$richPopCells)) %>%
+    dplyr::select(timePoint, timePointDays, cellType, posid) %>%
+    dplyr::group_by(cellType, timePoint, timePointDays) %>%
+    dplyr::summarise(estAbund = n_distinct(posid)) %>%
+    dplyr::ungroup() %>%
+    tidyr::spread(cellType, estAbund) %>%
+    dplyr::arrange(timePointDays) %>%
+    dplyr::rename('Time point' = timePoint) %>% 
+    dplyr::select(-timePointDays) %>%
+    dplyr::mutate(Rich = ifelse(apply(.[,2:length(.)], 1, max, na.rm = TRUE) > 1000, 'Yes', 'No')) %>%
+    data.frame(check.names = FALSE)
+
+       
+  for(i in 2:(length(richTable)-1)){ richTable[,i] <- sapply(unlist(richTable[,i]), ppNum) }
+}
+```
+
+```{r richTable, echo=FALSE}
+if(nrow(richTable) > 0) kable(richTable, "latex",  linesep = "", booktabs = T) %>% kable_styling(position = "center")
+```
+
+\vspace{1.0cm}
+
+## Do any cell clones account for more than 20% of all clones? 
+
+For some trials, a reporting criteria is whether any cell clones expand to account for greater than 20% 
+of all clones. The table below highlights samples with relative abundances $\geq$ 20% considering only samples 
+with 50 or more inferred cells. 
+
+```{r, echo=FALSE, results='asis'}
+o <- dplyr::filter(d, relAbund >= 20) %>%
+     dplyr::filter(totalSampleFrags >= 50) %>%
+     dplyr::select(posid, estAbund, relAbund, timePoint, cellType, nearestFeature, 
+                   nearestFeatureDist, nearestOncoFeature, nearestOncoFeatureDist) %>%
+     dplyr::mutate(relAbund                 = sprintf("%.1f%%", relAbund),
+                   nearestFeatureDist     = round((nearestFeatureDist / 1000), 1),
+                   nearestOncoFeatureDist = round((nearestOncoFeatureDist / 1000), 1))
+
+if(nrow(o) > 0){
+  names(o) <- c('IntSite', 'Abundance',  'Relative abudance', 'time point', 'Cell type', 'Nearest gene', 
+                'Distance (KB)', 'Nearest oncogene', 'Distance (KB)') # , 'Distance < 50KB')
+  cat('\\begin{table}[!htbp]\n\\resizebox{\\textwidth}{!} {')
+  print(xtable(o, align='lccccccccc'), floating=FALSE, table.placement='h', comment = FALSE, include.rownames = FALSE)
+  cat('}\n\\end{table}')
+} else {
+  cat('\\vspace{0.5cm}\n**No clones exceed 20% in any samples.**\n')
+}
+```
+
+\newpage
+
+## Are any cell clones increasing in proportion over time?
+
+The plot below details the longitudinal sample relative abundances of the most abundant 20 clones where only samples with 50 or more inferred cells are considered.
+
+\vspace{1.0cm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Relative abundance plot (combined)
+
+  d$dataSource <- as.character(d$dataSource)
+  d$dataSource <- factor(d$dataSource, levels = sort(unique(d$dataSource)))
+  
+  # Add GTSP filter
+  o <- dplyr::filter(d, totalSampleFrags >= 50 & toupper(cellType) %in% toupper(cellTypesOfInterest)) %>%
+       dplyr::mutate(posidLabelCellType = paste(cellType, ': ', labeledNearestFeature, '\n', posid)) %>%
+       dplyr::arrange(desc(relAbund)) %>% 
+       dplyr::filter(posidLabelCellType %in% unique(posidLabelCellType)[1:20]) %>%
+       dplyr::arrange(timePointDays) %>%
+       dplyr::mutate(timePoint = factor(timePoint, levels=unique(d$timePoint))) %>%
+       dplyr::select(timePoint, cellType, relAbund, posidLabel, posidLabelCellType, dataSource) 
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=8, fig.width=8, results='asis'}
+if(nrow(o) == 0){
+  cat('This plot was not created because no sample exceeded 50 or more inferred cells.\n\n\\vspace{1.0cm}\n\n')
+} else {
+  
+  ggplot(o, aes(timePoint, relAbund/100, color = posidLabelCellType, shape = dataSource)) + 
+    theme_bw() + 
+    scale_x_discrete(drop=FALSE) +
+    scale_color_manual(name = 'Clone', values = colorRampPalette(brewer.pal(12, "Paired"))(20)) + 
+    scale_shape_manual(name = 'Data source', values = c(16, 17, 15), drop = FALSE) +
+    geom_line(position = ggplot2::position_dodge(0.15), alpha=0.5, aes(group=posidLabelCellType)) + 
+    geom_point(position = ggplot2::position_dodge(0.15), size=3, stroke=1.2) +
+    labs(x='Time point', y='Relative abundance') +
+    theme(legend.position="bottom", axis.text.x = element_text(angle = 315, hjust = 0)) + 
+    guides(color=guide_legend(title.position = "top", ncol=2, keyheight=0.35, default.unit="inch"),
+           shape=guide_legend(title.position = "top", ncol=1)) +
+    scale_y_continuous(labels = scales::percent) 
+}
+```
+
+\newpage
+
+# Introduction  
+
+The attached report describes results of analysis of integration site distributions and relative abundance for 
+samples from gene therapy trials. For cases of gene correction in circulating blood cells, it is possible 
+to harvest cells sequentially from blood to monitor cell populations. Frequency of isolation information can 
+provide information on the clonal structure of the population. This report summarizes results for subject `r args$patient` 
+over time points `r paste(gtools::mixedsort(unique(d$timePoint)), collapse = ', ')` in UCSC genome draft `r args$genome`.  
+  
+The samples studied in this report, the numbers of sequence reads, recovered integration vectors, and unique integration 
+sites available for this subject are shown below. We quantify population clone diversity using Gini coefficients, Shannon index, 
+and UC50. The Gini coefficient provides a measure of inequality in clonal abundance in each sample. The coefficient equals zero 
+when all sites are equally abundant (polyclonal) and increases as fewer sites account for more of the total (oligoclonal). 
+Shannon index is another widely used measure of diversity and it accounts for both abundance and evenness of the integration events. 
+Alternatively, the UC50 is the number of unique clones which make up the top 50% of the sample's abundance. For polyclonal samples, 
+one may expect a low Gini coefficient, high Shannon Index, and high UC50 (proportional to the total number of unique sites identified 
+in the sample).  
+  
+Under most circumstances only a subset of sites will be sampled. We thus include an estimate of sample size based on frequency of 
+isolation information from the SonicLength method (Berry, 2012). The 'S.chao1' column denotes the estimated lower bound for population 
+size derived using Chao estimate (Chao, 1987). If sample replicates were present then estimates were subjected to jackknife bias correction.  
+  
+We estimate the numbers of cell clones sampled using the SonicLength method (Berry, 2012); this is summarized in the column “Inferred cells”. 
+Integration sites were recovered using ligation mediated PCR after random fragmentation of genomic DNA, which reduces recovery biases compared 
+with restriction enzyme cleavage. Relative abundance was not measured from read counts, which are known to be inaccurate, but from marks 
+introduced into DNA specimens prior to PCR amplification using the SonicLength method PMID:22238265.  
+  
+We quantify population diversity using Gini coefficients, Shannon index, and UC50. The Gini coefficient provides a measure of inequality 
+in clonal abundance in each sample. The coefficient equals zero when all sites are equally abundant (polyclonal) and increases as fewer 
+sites account for more of the total (oligoclonal). Shannon index is another widely used measure of diversity and it accounts for both 
+abundance and evenness of the integration events. UC50 is the number of clones which make up the top 50% of the sample's abundance. 
+For polyclonal samples, one may expect a low Gini coefficient, high Shannon Index, and high UC50 (proportional to the total number 
+of unique sites identified in the sample).  
+  
+Integration positions are reported with the format (nearest gene, chromosome, +/-, genomic position) where the nearest gene is the nearest 
+transcriptional boundary to the integration position, '+' refers to integration in the positive orientation and '-' refers to integration in 
+the reverse orientation. Reported distances are signed where where the sign indicates if integrationsare upstream (-) or downstream (+, no sign) 
+of the nearest gene. Nearest genes possess additional annotations described in the table below. 
+
+```{r, echo=FALSE, results='asis'}
+library(xtable)
+o <- data.frame(Symbol = c('*', '~', '!'), 
+                Meaning=c('site is within a transcription unit', 
+                          'site is within 50kb of a cancer related gene',
+                          'nearest gene was assocaited with lymphoma in humans'))
+print(xtable(o, align='lll'), comment=FALSE, include.rownames = FALSE)
+```
+
+\blandscape
+
+# Sample Summary  
+
+The table below provides population statistics for each analyzed sample. Occasionally multiple samples from the same cell fraction and time point are analyzed where only the sample with greatest number of inferred cells is considered in this report.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+# Add VCN
+summaryTable$VCN <- sampleData[match(summaryTable$GTSP, sampleData$SpecimenAccNum),]$VCN
+
+s <- unlist(lapply(1:50, function(x) rep(x, 32)))
+summaryTable$s <- s[1:nrow(summaryTable)]
+
+invisible(lapply(split(summaryTable, summaryTable$s), function(x){
+  if(x$s[1] > 1) cat('\\blandscape')
+  x$s <- NULL
+  cat(kable(x, "latex", linesep = "", booktabs = T) %>% kable_styling(latex_options = c("scale_down", "hold_position")))
+  cat('\\elandscape')
+}))
+```
+
+
+# Tracking of clonal abundances
+
+## Relative abundance of cell clones
+
+The relative abundances of cell clones is summarized in the stacked bar plots below. The cell fraction studied 
+is named at the top of each plot and the time points are marked at the bottom. The different bars in each panel 
+show the major cell clones, as marked by integration sites where the x-axis indicates time points and the y-axis 
+is scaled by proportion of the total cells sampled. The top 10 most abundant clones from each cell type have 
+been named by the nearest gene while the remaining sites are binned as low abundance (LowAbund; grey). 
+The total number of genomic fragments used to identify integration sites are listed atop of each plot. 
+These fragments are generated by restriction endonucleases in 454 sequencing experiments and by sonic shearing 
+in Illumina sequencing experiments. Relative abundances are calculated using the total number of reads associated 
+with clones in 454 sequencing experiments while the number of unique sonic breaks is used in Illumina sequencing experiments.
+
+\newpage
+
+```{r, echo=FALSE, fig.width=10, fig.height=12, results='asis'}
+# Relative abundance plots
+
+# Create named color vector for unique clones.
+cloneColorsVector <- setNames(c('#eeeeee', colorRampPalette(brewer.pal(12, "Paired"))(n_distinct(abundantClones$posidLabel))),  c('LowAbund', unique(abundantClones$posidLabel)))
+
+dataSourcelevels = sort(unique(abundantClones$dataSource))
+
+abundantClonesPlots <- lapply(split(abundantClones, abundantClones$cellType), function(x){
+  o <- subset(x, posidLabel != 'LowAbund')
+  o <- o[order(o$relAbund, decreasing = TRUE),]
+  
+  x$posidLabel <- factor(x$posidLabel, levels = c('LowAbund', unique(o$posidLabel)))
+  x <- x[order(x$timePointDays),]
+  x$timePoint  <- factor(x$timePoint, levels = (unique(d$timePoint))) 
+  x$dataSource <- factor(as.character(x$dataSource), levels = dataSourcelevels)
+  
+  totalCellLabel <- unname(unlist(lapply(split(x, x$timePoint), function(x) ppNum(x$totalCells[1]))))
+
+  ggplot(x) +
+  theme_bw() +
+  scale_x_discrete(drop=FALSE) + 
+  geom_bar(aes(timePoint, relAbund/100, fill=posidLabel), stat='identity', color = 'black', size = 0.20) + 
+  scale_fill_manual(name = 'Clones', values = cloneColorsVector) +
+  scale_shape_manual(values = c(16, 17, 15), drop = FALSE) +
+  labs(x = 'Timepoint', y = 'Relative Sonic Abundance') +
+  ggtitle(x$cellType[1]) +
+  guides(fill=guide_legend(title.position = "top", ncol=1, keyheight=0.35, default.unit="inch")) +
+  scale_y_continuous(labels = scales::percent) + 
+  annotate('text', x=1:length(totalCellLabel), y=1.04, label=totalCellLabel, size=2.7, angle=45, hjust=0.5) +
+  theme(axis.text.x = element_text(angle = 315, hjust = 0)) +
+  geom_point(aes(timePoint, y = -0.02, shape = dataSource), size = 2) 
+})
+
+plotsPerPage <- 4
+pages <- ceiling(length(abundantClonesPlots) / plotsPerPage)
+invisible(sapply(1:pages, function(page){
+  rangeEnd <- (page * plotsPerPage)
+  if(rangeEnd > length(abundantClonesPlots))  rangeEnd <- length(abundantClonesPlots)
+  range <- ((page * plotsPerPage)-plotsPerPage+1):rangeEnd
+  do.call("grid.arrange", c(abundantClonesPlots[range], ncol = 2))
+  
+  
+  # UCSD CYS patch 2018-10-12
+  # cat('\n\\vspace{4.0cm}\n')
+  # cat('\\fontsize{10}{10}\\selectfont\n')
+  # cat('$\\bullet$ Integration at chr7-80692518, near 1810026B05Rik, is 6 KB upstream of oncogene Chd2.\n')
+  # cat('\\fontsize{12}{16}\\selectfont\n')
+    
+  
+  cat('\\newpage')
+}))
+```
+
+
+```{r, echo=FALSE}
+# Compile the data for the longintudinal abundance plot.
+
+nClones <- 20
+
+o <- subset(abundantClones, posidLabel != 'LowAbund')
+if(length(unique(o$posidLabel)) < nClones) nClones <- length(unique(o$posidLabel))
+
+o <- o[order(o$relAbund, decreasing = TRUE),]
+n <- unique(o$posidLabel)[1:nClones]
+
+a <- subset(o, posidLabel %in% n)
+a <- a[order(a$timePointDays),]
+a$timePoint <- factor(a$timePoint, levels=unique(d$timePoint))
+```
+
+\newpage 
+## Longitudinal behavior of major clones  
+
+When multiple time points are available, it is of interest to track the behavior of the most abundant clones across different cell types. 
+A plot of the relative abundances of the most abundant `r nClones` clones is shown below. For cases where only a single time point is available, 
+the data is plotted as unlinked points.
+
+\vspace{0.25cm}
+
+```{r, echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, fig.width=10, fig.height=10, results='asis'}
+pd <- ggplot2::position_dodge(0.15)
+p <- ggplot(a, aes(timePoint, relAbund/100, color=posidLabel)) +
+  theme_bw() +
+  scale_x_discrete(drop=FALSE) +
+  scale_color_manual(name = 'Clone', values =  colorRampPalette(brewer.pal(12, "Paired"))(nClones)) +
+  geom_point(position = pd, size=2) +
+  geom_line(position = pd, aes(group=posidLabel)) +
+  #facet_wrap(~cellType, ncol = 2) + 
+  labs(x='Time point', y='Sonic abundnace') +
+  guides(color=guide_legend(keywidth=0.1,keyheight=0.32,default.unit="inch")) +
+  scale_y_continuous(labels = scales::percent) +
+  theme(legend.position="bottom") +
+  guides(color=guide_legend(title.position = "top", ncol=5, keyheight=0.35, default.unit="inch")) +
+  theme(axis.text.x = element_text(angle = 315, hjust = 0))
+
+pages <- ceiling(n_distinct(a$cellType) / 6)
+
+invisible(sapply(1:pages, function(page){
+  print(p + facet_wrap_paginate(~cellType, ncol = 2, nrow = 3, page = page))
+  cat('\\newpage')
+}))
+```
+\newpage
+
+## Integration sites near particular genes of interest
+
+Integration sites near genes that have been associated with adverse events are of particular interest. 
+Below are longitudinal relative abundance plots that focus on the most abundant 5 clones whoes nearest genes 
+are LMO2, IKZF1, CCND2, HMGA2, and MECOM.
+
+\vspace{1.0cm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=8, fig.width=9, results='asis'}
+o <- d
+o <- subset(o, toupper(nearestFeature) %in% c('LMO2', 'IKZF1', 'CCND2', 'HMGA2', 'MECOM'))
+
+if(nrow(o) == 0){
+  cat('No integration sites were found near LMO2, IKZF1, CCND2, HMGA2 or MECOM\n\n')
+} else {
+  posidLabels <- unname(unlist(lapply(split(o, o$nearestFeature), function(x){
+                   unique(x[order(x$relAbund, decreasing = TRUE),]$posidLabel)[1:5]
+                 })))
+
+  o <- subset(o, posidLabel %in% posidLabels)
+
+  o <- o[order(o$timePointDays),]
+  o$timePoint <- factor(o$timePoint, levels=unique(d$timePoint))
+  
+  pd <- ggplot2::position_dodge(0.15)
+  
+  p <- ggplot(o, aes(timePoint, relAbund/100, color=posidLabel)) +
+    theme_bw() +
+    scale_x_discrete(drop=FALSE) +
+    scale_color_manual(name = 'Clone', values =  colorRampPalette(brewer.pal(12, "Paired"))(25)) +
+    geom_point(position = pd, size=2) +
+    geom_line(position = pd, aes(group=posidLabel)) +
+    ###facet_wrap(~cellType, ncol = 2) + 
+    labs(x='Time point', y='Sonic abundnace') +
+    guides(color=guide_legend(keywidth=0.1,keyheight=0.32,default.unit="inch")) +
+    scale_y_continuous(labels = scales::percent, limits = c(0, NA)) +
+    theme(legend.position="bottom") +
+    guides(color=guide_legend(title.position = "top", ncol=5, keyheight=0.35, default.unit="inch")) +
+    theme(axis.text.x = element_text(angle = 315, hjust = 0)) 
+  
+  pages <- ceiling(n_distinct(o$cellType) / 6)
+
+  invisible(sapply(1:pages, function(page){
+    print(p + facet_wrap_paginate(~cellType, ncol = 2, nrow = 3, page = page))
+    cat('\\newpage')
+  }))
+}
+```
+
+\newpage
+
+## Sample relative abundance heatmap  
+
+Alternatively, the relative abundances of the most abundant 10 clones from each cell sampled type can be visualized as a heat map. 
+
+\vspace{0.5cm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=10, results='asis'}
+# Relative abundance heatmap
+
+o <- subset(d, posidLabel %in% abundantClones$posidLabel)
+o$posidLabel <- gsub('\\n', '' , o$posidLabel)
+o <- bind_rows(o, subset(abundantClones, posidLabel == 'LowAbund'))
+o$posidLabel <- factor(o$posidLabel)
+o$posidLabel <- relevel(o$posidLabel, 'LowAbund')
+
+o <- o[order(o$timePointDays),]
+o$timePoint <- factor(o$timePoint, levels=unique(d$timePoint))
+
+relAbundHeatMap <- ggplot(o, aes(timePoint, posidLabel, fill=relAbund/100)) +
+  theme_bw() +
+  scale_x_discrete(drop=FALSE) +
+  geom_tile() +
+  scale_fill_gradientn(name='Relative abundance', 
+                       colours=c("#CBFAD8", "#D6FAA9", "#E1FB7A", "#EDFC4B", "#EFE932", "#F2D619", 
+                                 "#F5C400", "#F89815", "#FB6C2A", "#FF4040"),
+                       breaks = 0.25*0:4, 
+                       labels = paste0((0.25*0:4)*100, '%')) +
+  labs(x='Timepoint', y='Clones') +
+  theme(axis.text.x = element_text(angle = 315, hjust = 0))
+
+pages <- ceiling(n_distinct(o$cellType) / 4)
+
+invisible(sapply(1:pages, function(page){
+  print(relAbundHeatMap +
+        theme(legend.position="bottom") +
+        guides(fill=guide_colorbar(title.position = "top", barwidth=20)) +   
+        facet_wrap_paginate(~cellType, ncol = 4, nrow = 1, scales = 'free_x', page = page))
+  cat('\\newpage')
+}))
+```
+
+
+# What are the most frequently occuring gene types in the subject?
+
+The word clouds below illustrate the nearest genes of the most abundant clones from each sample where 
+the numeric ranges represent the upper and lower clonal abundances.
+
+```{r, echo=FALSE, results='asis', warning=FALSE, message=FALSE}
+# Wordclouds
+
+writeLatexImgTable <- function(images){
+  f <- unlist(lapply(strsplit(images, '/'), function(x){ x[length(x)] }))
+  #o <- do.call(rbind, base::strsplit(f, '\\.'))
+  o <- do.call(rbind, base::strsplit(f, '_'))
+
+  labels <- paste0(o[,2], '\\\\', o[,3], ' ', o[,4], ':', o[,5])
+  labels <- gsub('_', ' ', labels)
+  cat('\\renewcommand\\theadalign{', paste0(rep('lp{6cm} ', length(images)), collapse = ' '), '}\n', 
+      '\\begin{table}[!htbp]\\scriptsize\n',
+      paste0('\\begin{tabular}{', paste(rep('l', length(images)), collapse = ' ')), '} \\\\\n', 
+      paste0('\\thead{', labels, '}', collapse = ' & '), '\\\\\n', 
+      paste0('\\includegraphics[height=60mm]{', images, '}', collapse = ' & '), '\\\\\n', 
+      '\\end{tabular}\n',
+      '\\end{table}')
+}
+
+
+# Retrieve list of wordCloud files and order them first by time point and then 
+# by cell type both of which are encoded in the file names. This can not be done 
+# in a single step since gtools:mixedorder does not support ordering more than one vector.
+
+
+
+
+
+#files  <- list.files(path = args$outputDir, pattern='wordCloud', full.names = TRUE)
+#files2 <- list.files(path = args$outputDir, pattern='wordCloud', full.names = FALSE)
+
+files  <- list.files(path = file.path(args$outputDir, args$patient, 'wordClouds'), full.names = TRUE)
+files2 <- list.files(path = file.path(args$outputDir, args$patient, 'wordClouds'), full.names = FALSE)
+
+
+f <- data.frame(timePoint = unlist(lapply(strsplit(files2, '\\_'), '[[', 3)),
+                cellType  = unlist(lapply(strsplit(files2, '\\_'), '[[', 2)),
+                file      = files)
+
+f$timePoint <- as.character(f$timePoint)
+f$cellType  <- as.character(f$cellType)
+f$file      <- as.character(f$file)
+
+f <- f[gtools::mixedorder(f$timePoint),]
+f$timePoint <- factor(f$timePoint, levels = unique(f$timePoint))
+f <- bind_rows(lapply(split(f, f$timePoint), function(x){ x[gtools::mixedorder(x$cellType),] }))
+
+invisible(lapply(split(f$file, rep(1:length(f$file), each=3)[1:length(f$file)]), function(x){
+  writeLatexImgTable(x)
+}))
+```
+
+\newpage
+
+# Methods
+
+All coordinates are on human genome draft hg38.
+
+Detailed methods can be found these publications:  
+- Bioinformatics. 2012 Mar 15; 28(6): 755–762.   
+- Mol Ther Methods Clin Dev. 2017 Mar 17; 4: 17–26.  
+- Mol Ther Methods Clin Dev. 2017 Mar 17; 4: 39–49.  
+  
+Analysis software:  
+- INSPIIRED v1.1  (http://github.com/BushmanLab/INSPIIRED)  
+ 
+Report generation software:  
+- subjectReport v0.1 (http://github.com/everettJK/geneTherapySubjectReport)  
+
+
+
+
+
+
