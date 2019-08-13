@@ -130,9 +130,8 @@ cellTypeNameConversions <- read.table(args$cellTypeNameConversions, sep='\t', he
 # Convert cell type conversion table to uppercase.
 cellTypeNameConversions <- data.frame(apply(cellTypeNameConversions, 2, toupper))
 
+# Duplication of From values will result in duplication of intSite records.
 if(any(duplicated(cellTypeNameConversions$From))) stop('There are duplicate "From" column values in the cellType name conversion file.')
-
-# subset(d, posid == 'chr12+67808068')
 
 # Join the conversion table to the intSite table, identify which cell types have a conversion and resassign the corresponding values.
 d <- dplyr::left_join(d, cellTypeNameConversions, by = c('cellType' = 'From'))
