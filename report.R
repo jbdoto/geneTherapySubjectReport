@@ -36,13 +36,13 @@ if(! 'args' %in% ls()) args <- list()
 args$specimenDB               <- 'specimen_management'
 args$intSiteDB                <- 'intsites_miseq'
 args$reportFile               <- 'report.Rmd'
-args$patient                  <- 'p04409-10'
-args$trial                    <- 'CART19'
+args$patient                  <- 'pP9'
+args$trial                    <- 'SCID1_Paris_Cavazzana'
 args$outputDir                <- 'output'
 args$richPopCells             <- 'Whole blood,T cells,B cells,NK cells,Neutrophils,Monocytes,PBMC'
 args$cellTypeNameConversions  <- './cellTypeNameConversions.tsv'
-args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
-args$legacyData               <- '../data/legacyData.rds'
+### args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
+args$legacyData               <- '/home/everett/projects/project.management.dashboard/data/legacyData.rds'
 args$use454ReadLevelRelAbunds <- TRUE
 
 
@@ -77,6 +77,8 @@ if(nrow(sampleData) == 0){
   intSites$dataSource <- 'Illumina'
   
   if(length(intSites) > 0 & length(legacyData) > 0){
+     message(paste0('Merging legacy (', length(legacyData), ' sites) and production (', length(intSites), ') data.'))
+    
      # Order the metadata columns of intSites and legacy data so that they can be combined.
      d <- data.frame(mcols(intSites)) 
      mcols(intSites) <- d[, order(colnames(d))]
@@ -118,24 +120,26 @@ intSites <- gt23::stdIntSiteFragments(intSites) %>%
 
 # Convert GRange object to data frame and correct cellType names
 d <- data.frame(intSites)
-d$cellType <- gsub('^\\s+|\\s+$', '', toupper(d$cellType))
-cellTypeNameConversions <- read.table(args$cellTypeNameConversions, sep='\t', header = FALSE, strip.white = TRUE)
 
-invisible(apply(cellTypeNameConversions, 1, function(x){
-  cellTypes <- d$cellType
-  i <- which(toupper(x[1]) == d$cellType)
-  if(length(i) > 0){
-    cellTypes[i] <- x[2]
-    d$cellType <<- cellTypes
-  }  
-}))
+# Convert cell types to uppercase and remove leading and trailing white spaces.
+d$cellType <- gsub('^\\s+|\\s+$', '', toupper(d$cellType))
+
+# Read in cell type conversion table.
+cellTypeNameConversions <- read.table(args$cellTypeNameConversions, sep='\t', header = TRUE, strip.white = TRUE)
+
+# Convert cell type conversion table to uppercase.
+cellTypeNameConversions <- data.frame(apply(cellTypeNameConversions, 2, toupper))
+
+# Join the conversion table to the intSite table, identify which cell types have a conversion and resassign the corresponding values.
+d <- dplyr::left_join(d, cellTypeNameConversions, by = c('cellType' = 'From'))
+d[which(! is.na(d$To)),]$cellType <- d[which(! is.na(d$To)),]$To
 
 
 
 # Build relative abundace plot data and plots
 #~-~-~-~-~-~-~-~-~-~-~o~-~-~-~-~-~-~-~-~-~-~-~-~o~-~-~-~-~-~-~-~-~-~-~-~-~o~-~-~-~-~-~-~-~-~-~-~-~-~
 
-d <- dplyr::group_by(data.frame(intSites), timePoint, cellType) %>%
+d <- dplyr::group_by(d, timePoint, cellType) %>%
      dplyr::mutate(readsPerSample = sum(reads)) %>%
      dplyr::ungroup() %>%
      dplyr::group_by(timePoint, cellType, posid) %>%
@@ -148,18 +152,19 @@ d <- dplyr::group_by(data.frame(intSites), timePoint, cellType) %>%
      dplyr::mutate(include = ifelse(totalSampleFrags == max(totalSampleFrags), 'yes', 'no')) %>%
      dplyr::ungroup()
 
-# Swap in readsRelAbun values for relAbund vlues for 454 data.
+# Swap in readsRelAbund values for relAbund vlues for 454 data.
 if(args$use454ReadLevelRelAbunds) d <- dplyr::mutate(d, relAbund = ifelse(dataSource == '454', readsRelAbund, relAbund))
 
-
-
 # Add nearest feature flags.
-d$labeledNearestFeature <- d %>%
+d <- d %>%
   mutate(labeledNearestFeature = paste0(nearestFeature, ' ')) %>% 
-  mutate(labeledNearestFeature = ifelse(inFeature, paste0(labeledNearestFeature, '*'), labeledNearestFeature)) %>% 
-  mutate(labeledNearestFeature = ifelse(abs(nearestOncoFeatureDist) <= 50000, paste0(labeledNearestFeature, '~'), labeledNearestFeature)) %>%
-  mutate(labeledNearestFeature = ifelse(abs(nearestlymphomaFeatureDist) <= 50000, paste0(labeledNearestFeature, '!'), labeledNearestFeature)) %>%
-  select(labeledNearestFeature) %>% unlist() %>% unname()
+  mutate(labeledNearestFeature = ifelse(inFeature, paste0(labeledNearestFeature, '*'), labeledNearestFeature)) 
+
+if('nearestOncoFeatureDist' %in% names(d))
+  d <- mutate(d, labeledNearestFeature = ifelse(abs(nearestOncoFeatureDist) <= 50000, paste0(labeledNearestFeature, '~'), labeledNearestFeature))
+
+if('nearestlymphomaFeatureDist' %in% names(d))
+  d <- mutate(d, labeledNearestFeature = ifelse(abs(nearestlymphomaFeatureDist) <= 50000, paste0(labeledNearestFeature, '!'), labeledNearestFeature)) 
 
 
 # Create label for unique intSites.
@@ -296,7 +301,7 @@ names(d.wide) <- stringi::stri_replace_last(str = names(d.wide), regex = "_", re
 #~-~-~-~-~-~-~-~-~-~-~o~-~-~-~-~-~-~-~-~-~-~-~-~o~-~-~-~-~-~-~-~-~-~-~-~-~o~-~-~-~-~-~-~-~-~-~-~-~-~
 
 d <- d[order(d$timePointDays),]
-save(args, sampleData, intSites, d, d.wide, summaryTable, abundantClones, file=file.path(args$outputDir, paste0(args$patient, '.RData')))
+save(args, sampleData, d, d.wide, summaryTable, abundantClones, file=file.path(args$outputDir, paste0(args$patient, '.RData')))
 
 rmarkdown::render(args$reportFile, 
                   output_file = paste0(args$outputDir, '/', paste0(args$trial, '.', args$patient), '.pdf'),
