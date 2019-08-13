@@ -36,12 +36,12 @@ args <- parser$parse_args()
 # args$specimenDB               <- 'specimen_management'
 # args$intSiteDB                <- 'intsites_miseq'
 # args$reportFile               <- 'report.Rmd'
-# args$patient                  <- 'pP9'
+# args$patient                  <- 'pP10'
 # args$trial                    <- 'SCID1_Paris_Cavazzana'
 # args$outputDir                <- 'output'
 # args$richPopCells             <- 'Whole blood,T cells,B cells,NK cells,Neutrophils,Monocytes,PBMC'
 # args$cellTypeNameConversions  <- './cellTypeNameConversions.tsv'
-# args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
+# ###args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
 # args$legacyData               <- '/home/everett/projects/project.management.dashboard/data/legacyData.rds'
 # args$use454ReadLevelRelAbunds <- TRUE
 
@@ -77,7 +77,7 @@ if(nrow(sampleData) == 0){
   intSites$dataSource <- 'Illumina'
   
   if(length(intSites) > 0 & length(legacyData) > 0){
-     message(paste0('Merging legacy (', length(legacyData), ' sites) and production (', length(intSites), ') data.'))
+     message(paste0('Merging legacy (', length(legacyData), ' sites) and production (', length(intSites), ' sites) data.'))
     
      # Order the metadata columns of intSites and legacy data so that they can be combined.
      d <- data.frame(mcols(intSites)) 
@@ -129,6 +129,10 @@ cellTypeNameConversions <- read.table(args$cellTypeNameConversions, sep='\t', he
 
 # Convert cell type conversion table to uppercase.
 cellTypeNameConversions <- data.frame(apply(cellTypeNameConversions, 2, toupper))
+
+if(any(duplicated(cellTypeNameConversions$From))) stop('There are duplicate "From" column values in the cellType name conversion file.')
+
+# subset(d, posid == 'chr12+67808068')
 
 # Join the conversion table to the intSite table, identify which cell types have a conversion and resassign the corresponding values.
 d <- dplyr::left_join(d, cellTypeNameConversions, by = c('cellType' = 'From'))
