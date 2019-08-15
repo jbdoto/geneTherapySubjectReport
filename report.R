@@ -32,18 +32,18 @@ args <- parser$parse_args()
 
 
 # IDE overrides for when working within an IDE.
-# if(! 'args' %in% ls()) args <- list()
-# args$specimenDB               <- 'specimen_management'
-# args$intSiteDB                <- 'intsites_miseq'
-# args$reportFile               <- 'report.Rmd'
-# args$patient                  <- 'pP10'
-# args$trial                    <- 'SCID1_Paris_Cavazzana'
-# args$outputDir                <- 'output'
-# args$richPopCells             <- 'Whole blood,T cells,B cells,NK cells,Neutrophils,Monocytes,PBMC'
-# args$cellTypeNameConversions  <- './cellTypeNameConversions.tsv'
-# ###args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
-# args$legacyData               <- '/home/everett/projects/project.management.dashboard/data/legacyData.rds'
-# args$use454ReadLevelRelAbunds <- TRUE
+if(! 'args' %in% ls()) args <- list()
+args$specimenDB               <- 'specimen_management'
+args$intSiteDB                <- 'intsites_miseq'
+args$reportFile               <- 'report.Rmd'
+args$patient                  <- 'p03712-47'
+args$trial                    <- 'CART19_CLL'
+args$outputDir                <- 'output'
+args$richPopCells             <- 'Whole blood,T cells,B cells,NK cells,Neutrophils,Monocytes,PBMC'
+args$cellTypeNameConversions  <- './cellTypeNameConversions.tsv'
+###args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
+args$legacyData               <- '/home/everett/projects/project.management.dashboard/data/legacyData.rds'
+args$use454ReadLevelRelAbunds <- TRUE
 
 
 # Convert comma delimited string to vector.
