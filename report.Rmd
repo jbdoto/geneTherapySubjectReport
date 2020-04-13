@@ -514,6 +514,24 @@ invisible(lapply(split(f$file, rep(1:length(f$file), each=3)[1:length(f$file)]),
 
 \newpage
 
+# Multihits  
+
+This analysis has been looking at integration sites that can be uniquely mapped. But it is also helpful to look at reads finding multiple equally good alignments in the genome which can be reffered to as 'Multihits'. If an integration site occurred within a repeat element (i.e. Alus, LINE, SINE, etc), then it might be helpful to access those sites for potential detrimental effects. These collection of sequences are analyzed separately due to their ambiguity. 
+
+\vspace{1.0cm}
+
+
+```{r, echo=FALSE, results='asis'}
+if(nrow(sites.multi) > 0){
+  cat("## Sample  multihits groupings with relative abundances > 20%.  \n")
+  kable(sites.multi, "latex",  linesep = "", booktabs = T, align = "llcccc") %>% kable_styling(latex_options = c("scale_down"))
+} else {
+  cat("No sample contained a multihit grouping which exceeded 20% of the sample's inferred cells.")
+}
+```
+
+\newpage
+
 # Methods
 
 All coordinates are on human genome draft hg38.

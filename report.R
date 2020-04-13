@@ -9,6 +9,7 @@ library(vegan)
 library(argparse)
 library(GenomicRanges)
 library(dplyr)
+library(stringr)
 
 longitudinalCellTypesNum <- 3
 maxWordCloudWords <- 100
@@ -32,18 +33,19 @@ args <- parser$parse_args()
 
 
 # IDE overrides for when working within an IDE.
-if(! 'args' %in% ls()) args <- list()
-args$specimenDB               <- 'specimen_management'
-args$intSiteDB                <- 'intsites_miseq'
-args$reportFile               <- 'report.Rmd'
-args$patient                  <- 'p03712-47'
-args$trial                    <- 'CART19_CLL'
-args$outputDir                <- 'output'
-args$richPopCells             <- 'Whole blood,T cells,B cells,NK cells,Neutrophils,Monocytes,PBMC'
-args$cellTypeNameConversions  <- './cellTypeNameConversions.tsv'
-###args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
-args$legacyData               <- '/home/everett/projects/project.management.dashboard/data/legacyData.rds'
-args$use454ReadLevelRelAbunds <- TRUE
+# if(! 'args' %in% ls()) args <- list()
+# args$specimenDB               <- 'specimen_management'
+# args$intSiteDB                <- 'intsites_miseq'
+# args$reportFile               <- 'report.Rmd'
+# args$patient                  <- 'p03712-29'
+# args$trial                    <- 'CART19_CLL'
+# args$outputDir                <- 'output'
+# args$richPopCells             <- 'PBMC,T CELLS,HOLE BLOOD'
+# args$cellTypeNameConversions  <- './cellTypeNameConversions.tsv'
+# args$numClones                <- 10
+# args$use454ReadLevelRelAbunds <- FALSE
+# args$legacyData               <- '/home/everett/projects/project.management.dashboard/data/legacyData.rds'
+# # args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
 
 
 # Convert comma delimited string to vector.
@@ -65,8 +67,10 @@ if(file.exists(args$legacyData)){
 dbConn  <- dbConnect(MySQL(), group = args$specimenDB)
 q <- paste0('select * from gtsp where patient="', args$patient, '" and trial="', args$trial, '"')
 sampleData <- unique(dbGetQuery(dbConn, q))
-sampleIDs  <- sampleData$SpecimenAccNum
+sampleIDs  <- sampleData$SpecimenAc
 dbDisconnect(dbConn)
+
+
 
 
 # Merge legacy data if available.
@@ -112,14 +116,71 @@ if(! all(is.numeric(intSites$timePointDays)))
               paste0(intSites$timePointDays, collapse = ','))) 
 
 
-# Standardize genomic fragments, call intSites, annd annotate sites.
-intSites <- gt23::stdIntSiteFragments(intSites) %>%
-            gt23::collapseReplicatesCalcAbunds() %>%
-            gt23::annotateIntSites()
+# Here we break the typical intSite calling and annoation chain in order to capture
+# replicate level so that it can be saved to a data file for later anaylses. 
+
+# Standardize genomic fragments, call intSites, and annotate sites.
+intSites.std.reps <- gt23::stdIntSiteFragments(intSites) 
+
+
+# Multi-hits
+#--------------------------------------------------------------------------------------------------
+sql <- paste0("select samples.sampleName, samples.refGenome, multihitpositions.multihitID, ",
+              "multihitlengths.length from multihitlengths left join multihitpositions on ",
+              "multihitpositions.multihitID = multihitlengths.multihitID left join samples on ",
+              "samples.sampleID = multihitpositions.sampleID where sampleName like ", 
+              paste0(sQuote(paste0(sampleIDs, '-%')), collapse = ' or sampleName like '))
+
+dbConn  <- dbConnect(MySQL(), group = args$intSiteDB)
+sites.multi <- unique(dbGetQuery(dbConn, sql))
+dbDisconnect(dbConn)
+
+if( nrow(sites.multi) > 0 ){
+  
+  replicateLevelTotalAbunds <- 
+    group_by(data.frame(intSites.std.reps), sampleName, posid) %>%
+    mutate(estAbund = n_distinct(width)) %>%
+    ungroup() %>%
+    group_by(sampleName) %>%
+    summarise(totalReplicateAbund = sum(estAbund)) %>%
+    ungroup()
+  
+  sites.multi$GTSP <- str_extract(sites.multi$sampleName, 'GTSP\\d+') 
+  
+  sites.multi <- left_join(sites.multi, replicateLevelTotalAbunds, by = 'sampleName') %>%
+                 group_by(sampleName, multihitID) %>%
+                 mutate(estAbund = length(unique(length)),
+                        relAbund = ((estAbund / sum(totalReplicateAbund[1], estAbund))*100)) %>%
+                 summarise(totalReplicateCells = sum(totalReplicateAbund[1], estAbund), relAbund = relAbund[1], GTSP = GTSP[1]) %>%
+                 ungroup() %>%
+                 left_join(select(sampleData, CellType, Timepoint, SpecimenAccNum), c("GTSP" = "SpecimenAccNum")) %>%
+                 filter(relAbund >= 20) %>%
+                 select(-GTSP) %>%
+                 arrange(desc(relAbund)) %>%
+                 mutate(relAbund = sprintf("%.1f%%", relAbund))
+
+  names(sites.multi) <- c('Replicate', 'Multihit id', 'Total cells in replicate', 'Multihit relative Abundance', 'Celltype', 'Timepoint')
+}
+
+
+
+intSites <- gt23::collapseReplicatesCalcAbunds(intSites.std.reps) %>%
+            gt23::annotateIntSites() %>%
+            data.frame()
+
+# Add annotations to replicate level data.
+intSites.std.reps <- data.frame(intSites.std.reps)
+
+possibleFields <- c('posid', 'inFeature', 'nearestFeature', 'nearestFeatureStrand', 'inFeatureExon', 
+                    'inFeatureSameOrt', 'nearestFeatureDist', 'nearestOncoFeature', 'nearestOncoFeatureDist', 
+                    'nearestOncoFeatureStrand', 'nearestlymphomaFeature', 'nearestlymphomaFeatureDist', 
+                    'nearestlymphomaFeatureStrand')
+
+d.reps <- left_join(data.frame(intSites.std.reps), dplyr::select(intSites, possibleFields[possibleFields %in% names(intSites)]), by = 'posid')
 
 
 # Convert GRange object to data frame and correct cellType names
-d <- data.frame(intSites)
+d <- intSites
 
 # Convert cell types to uppercase and remove leading and trailing white spaces.
 d$cellType <- gsub('^\\s+|\\s+$', '', toupper(d$cellType))
@@ -136,6 +197,12 @@ if(any(duplicated(cellTypeNameConversions$From))) stop('There are duplicate "Fro
 # Join the conversion table to the intSite table, identify which cell types have a conversion and resassign the corresponding values.
 d <- dplyr::left_join(d, cellTypeNameConversions, by = c('cellType' = 'From'))
 d[which(! is.na(d$To)),]$cellType <- d[which(! is.na(d$To)),]$To
+
+
+# Sync the rep data.frame cell types. 
+d.reps$cellType <- NULL
+o <- unique(dplyr::select(d, cellType, GTSP))
+d.reps <- left_join(d.reps, o, by = 'GTSP')
 
 
 
@@ -304,7 +371,9 @@ names(d.wide) <- stringi::stri_replace_last(str = names(d.wide), regex = "_", re
 #~-~-~-~-~-~-~-~-~-~-~o~-~-~-~-~-~-~-~-~-~-~-~-~o~-~-~-~-~-~-~-~-~-~-~-~-~o~-~-~-~-~-~-~-~-~-~-~-~-~
 
 d <- d[order(d$timePointDays),]
-save(args, sampleData, d, d.wide, summaryTable, abundantClones, file=file.path(args$outputDir, paste0(args$patient, '.RData')))
+d.reps <- d.reps[order(d.reps$timePointDays),]
+
+save(args, sampleData, d, d.reps, d.wide, summaryTable, abundantClones, file=file.path(args$outputDir, paste0(args$patient, '.RData')))
 
 rmarkdown::render(args$reportFile, 
                   output_file = paste0(args$outputDir, '/', paste0(args$trial, '.', args$patient), '.pdf'),
