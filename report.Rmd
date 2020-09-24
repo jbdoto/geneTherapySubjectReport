@@ -484,16 +484,8 @@ writeLatexImgTable <- function(images){
 # by cell type both of which are encoded in the file names. This can not be done 
 # in a single step since gtools:mixedorder does not support ordering more than one vector.
 
-
-
-
-
-#files  <- list.files(path = args$outputDir, pattern='wordCloud', full.names = TRUE)
-#files2 <- list.files(path = args$outputDir, pattern='wordCloud', full.names = FALSE)
-
 files  <- list.files(path = file.path(args$outputDir, args$patient, 'wordClouds'), full.names = TRUE)
 files2 <- list.files(path = file.path(args$outputDir, args$patient, 'wordClouds'), full.names = FALSE)
-
 
 f <- data.frame(timePoint = unlist(lapply(strsplit(files2, '\\_'), '[[', 3)),
                 cellType  = unlist(lapply(strsplit(files2, '\\_'), '[[', 2)),

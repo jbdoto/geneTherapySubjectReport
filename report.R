@@ -12,6 +12,7 @@ library(dplyr)
 library(stringr)
 
 longitudinalCellTypesNum <- 3
+minRangeWidth <- 10
 maxWordCloudWords <- 100
 ppNum <- function(n){ if(is.na(n)) return(''); format(n,big.mark=",", scientific=FALSE, trim=TRUE) }
 
@@ -37,33 +38,22 @@ args <- parser$parse_args()
 # args$specimenDB               <- 'specimen_management'
 # args$intSiteDB                <- 'intsites_miseq'
 # args$reportFile               <- 'report.Rmd'
-# args$patient                  <- 'p03712-29'
-# args$trial                    <- 'CART19_CLL'
+# args$patient                  <- 'p1010004'
+# args$trial                    <- 'ARU-1801_Ph1_01'
 # args$outputDir                <- 'output'
-# args$richPopCells             <- 'PBMC,T CELLS,HOLE BLOOD'
+# args$richPopCells             <- 'PBMC,T CELLS,B CELLS'
 # args$cellTypeNameConversions  <- './cellTypeNameConversions.tsv'
 # args$numClones                <- 10
 # args$use454ReadLevelRelAbunds <- FALSE
-# args$legacyData               <- '/home/everett/projects/project.management.dashboard/data/legacyData.rds'
-# # args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
+# args$legacyData               <- '/home/everett/projects/gtVISA_dashboard/data/legacyData.rds'
+### args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
 
 
 # Convert comma delimited string to vector.
 args$richPopCells <- unlist(strsplit(args$richPopCells, ','))
 
 
-# Read in legacy data.
-legacyData <- GRanges()
-if(file.exists(args$legacyData)){
-  legacyData <- makeGRangesFromDataFrame(subset(readRDS(args$legacyData), 
-                                                patient == args$patient & 
-                                                  trial == args$trial), 
-                                        keep.extra.columns = TRUE)
-  legacyData$trial <- NULL
-}
-
-
-# Connect to sample database are retrieve subject data.
+# Retrieve subject data.
 dbConn  <- dbConnect(MySQL(), group = args$specimenDB)
 q <- paste0('select * from gtsp where patient="', args$patient, '" and trial="', args$trial, '"')
 sampleData <- unique(dbGetQuery(dbConn, q))
@@ -71,31 +61,58 @@ sampleIDs  <- sampleData$SpecimenAc
 dbDisconnect(dbConn)
 
 
+# Retreive all samples with current intSite data.
+dbConn        <- dbConnect(MySQL(), group = args$intSiteDB)
+intSiteSamples <- unique(gsub('\\-\\d+$', '', unname(unlist(dbGetQuery(dbConn, 'select sampleName from samples')))))
+dbDisconnect(dbConn)
 
 
-# Merge legacy data if available.
-if(nrow(sampleData) == 0){
-   intSites <- legacyData
-} else {
+# Read in legacy data.
+intSites   <- GRanges()
+legacyData <- GRanges()
+
+if(file.exists(args$legacyData)){
+  legacyData <- makeGRangesFromDataFrame(subset(readRDS(args$legacyData), 
+                                                patient == args$patient & 
+                                                trial == args$trial), 
+                                         keep.extra.columns = TRUE)
+  legacyData$trial <- NULL
+}
+
+
+
+
+if(any(sampleIDs %in% intSiteSamples)){
   intSites <- gt23::getDBgenomicFragments(sampleIDs, 'specimen_management', 'intsites_miseq')
   intSites$dataSource <- 'Illumina'
-  
-  if(length(intSites) > 0 & length(legacyData) > 0){
-     message(paste0('Merging legacy (', length(legacyData), ' sites) and production (', length(intSites), ' sites) data.'))
-    
-     # Order the metadata columns of intSites and legacy data so that they can be combined.
-     d <- data.frame(mcols(intSites)) 
-     mcols(intSites) <- d[, order(colnames(d))]
-   
-     # Reprocess the time points with the same function used in the gt23 pipeline for consistancy.
-     d <- data.frame(mcols(legacyData)) 
-     d <- dplyr::select(d, -timePointDays, -timePointMonths)
-     d <- dplyr::bind_cols(d, expandTimePoints(d$timePoint))
-     mcols(legacyData) <- d[, order(colnames(d))]
-   
-     intSites <- unlist(GRangesList(intSites, legacyData))
-   }
+} else if (length(legacyData) > 0){
+  intSites <- legacyData
+  legacyData <- GRanges()
+} else {
+  stop('There is no Illumina or Legacy data to work with.')
 }
+
+
+# Both Illumina and legacy data is available, merge both into intSites.
+if(length(intSites) > 0 & length(legacyData) > 0){
+  message(paste0('Merging legacy (', length(legacyData), ' sites) and production (', length(intSites), ' sites) data.'))
+    
+  # Order the metadata columns of intSites and legacy data so that they can be combined.
+  d <- data.frame(mcols(intSites)) 
+  mcols(intSites) <- d[, order(colnames(d))]
+   
+  # Reprocess the time points with the same function used in the gt23 pipeline for consistancy.
+  d <- data.frame(mcols(legacyData)) 
+  d <- dplyr::select(d, -timePointDays, -timePointMonths, -posid)
+  d <- dplyr::bind_cols(d, expandTimePoints(d$timePoint))
+  mcols(legacyData) <- d[, order(colnames(d))]
+   
+  intSites <- unlist(GRangesList(intSites, legacyData))
+}
+
+
+# Remove very short ranges because they are likely not real and may break downstream fragment standardization.
+intSites <- intSites[width(intSites) >= minRangeWidth]
 
 
 if(length(intSites) == 0) stop('No intSite data available.')
@@ -108,6 +125,12 @@ if(file.exists(args$allowedSamples)){
   if(length(intSites) == 0) stop('Error -- all rows removed after applying allowedSamples filter.')
 }
 
+
+# Hot patch
+if(any(grepl('baseline', intSites$timePoint, ignore.case = TRUE))){
+  intSites[grepl('baseline', intSites$timePoint, ignore.case = TRUE)]$timePointDays   <- 0
+  intSites[grepl('baseline', intSites$timePoint, ignore.case = TRUE)]$timePointMonths <- 0
+}
 
 # Check time point conversions.
 if(! all(is.numeric(intSites$timePointDays))) 
@@ -186,17 +209,17 @@ d <- intSites
 d$cellType <- gsub('^\\s+|\\s+$', '', toupper(d$cellType))
 
 # Read in cell type conversion table.
-cellTypeNameConversions <- read.table(args$cellTypeNameConversions, sep='\t', header = TRUE, strip.white = TRUE)
-
+# cellTypeNameConversions <- read.table(args$cellTypeNameConversions, sep='\t', header = TRUE, strip.white = TRUE)
+#
 # Convert cell type conversion table to uppercase.
-cellTypeNameConversions <- data.frame(apply(cellTypeNameConversions, 2, toupper))
+#cellTypeNameConversions <- data.frame(apply(cellTypeNameConversions, 2, toupper))
 
 # Duplication of From values will result in duplication of intSite records.
-if(any(duplicated(cellTypeNameConversions$From))) stop('There are duplicate "From" column values in the cellType name conversion file.')
+#if(any(duplicated(cellTypeNameConversions$From))) stop('There are duplicate "From" column values in the cellType name conversion file.')
 
 # Join the conversion table to the intSite table, identify which cell types have a conversion and resassign the corresponding values.
-d <- dplyr::left_join(d, cellTypeNameConversions, by = c('cellType' = 'From'))
-d[which(! is.na(d$To)),]$cellType <- d[which(! is.na(d$To)),]$To
+#d <- dplyr::left_join(d, cellTypeNameConversions, by = c('cellType' = 'From'))
+#d[which(! is.na(d$To)),]$cellType <- d[which(! is.na(d$To)),]$To
 
 
 # Sync the rep data.frame cell types. 
@@ -274,7 +297,7 @@ summaryTable <- group_by(d, GTSP) %>%
                 summarise(dataSource    = dataSource[1],
                           timePointDays = timePointDays[1],
                           # Replicates    = n_distinct(sampleName),
-                          Patient       = patient[1],
+                          # Patient       = patient[1],
                           Timepoint     = timePoint[1],
                           CellType      = cellType[1],
                           TotalReads    = ppNum(sum(reads)),
@@ -373,9 +396,26 @@ names(d.wide) <- stringi::stri_replace_last(str = names(d.wide), regex = "_", re
 d <- d[order(d$timePointDays),]
 d.reps <- d.reps[order(d.reps$timePointDays),]
 
-save(args, sampleData, d, d.reps, d.wide, summaryTable, abundantClones, file=file.path(args$outputDir, paste0(args$patient, '.RData')))
+archivePath <- file.path(args$outputDir, args$patient)
+dir.create(archivePath)
+
+# Add patient identifiers to select tables so that they can be merged with other patients if needed.
+d.wide$patient         <- args$patient
+abundantClones$patient <- args$patient
+summaryTable$patient   <- args$patient
+
+write.table(sampleData, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'sampleData.csv'))
+write.table(d, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'intSites.csv'))
+write.table(d.wide, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'intSites_wideView.csv'))
+write.table(d.reps, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'intSites_replicates.csv'))
+write.table(summaryTable, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'summary.csv'))
+write.table(abundantClones, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'abundantClones.csv'))
+write(date(), file = file.path(archivePath, 'timeStamp.txt'))
 
 rmarkdown::render(args$reportFile, 
-                  output_file = paste0(args$outputDir, '/', paste0(args$trial, '.', args$patient), '.pdf'),
+                  output_file = paste0(args$outputDir, '/', args$patient, '/', args$patient, '.pdf'),
                   params = list('date'  = format(Sys.Date(), format="%B %d, %Y"),
                                 'title' = paste0('Analysis of integration site distributions and relative clonal abundance for subject ', args$patient)))
+
+
+unlink(file.path(args$outputDir, args$patient, 'wordClouds'), recursive = TRUE)
