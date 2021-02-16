@@ -222,7 +222,8 @@ print(xtable(o, align='lll'), comment=FALSE, include.rownames = FALSE)
 
 # Sample Summary  
 
-The table below provides population statistics for each analyzed sample. Occasionally multiple samples from the same cell fraction and time point are analyzed where only the sample with greatest number of inferred cells is considered in this report.
+The table below provides population statistics for each analyzed sample. Occasionally multiple samples from the same cell fraction and time point are analyzed where only the sample with greatest number of inferred cells is considered in this report. Sample rows with NA listed in the TotalReads, InferredCells, UniqueSite and other 
+columns represent samples which were analyzed but no integration sites were identified.
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
 
@@ -231,6 +232,8 @@ summaryTable$VCN <- sampleData[match(summaryTable$GTSP, sampleData$SpecimenAccNu
 
 s <- unlist(lapply(1:50, function(x) rep(x, 32)))
 summaryTable$s <- s[1:nrow(summaryTable)]
+
+summaryTable <- dplyr::select(summaryTable, -patient)
 
 invisible(lapply(split(summaryTable, summaryTable$s), function(x){
   if(x$s[1] > 1) cat('\\blandscape')

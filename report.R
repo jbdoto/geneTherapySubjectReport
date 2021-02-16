@@ -1,6 +1,7 @@
 options(stringsAsFactors = FALSE, useFancyQuotes = FALSE)
 library(gt23)    # https://github.com/everettJK/gt23
 library(RMySQL)  # loads DBI
+library(lubridate)
 library(gtools) 
 library(wordcloud) 
 library(ggplot2) 
@@ -38,15 +39,15 @@ args <- parser$parse_args()
 # args$specimenDB               <- 'specimen_management'
 # args$intSiteDB                <- 'intsites_miseq'
 # args$reportFile               <- 'report.Rmd'
-# args$patient                  <- 'p1010004'
-# args$trial                    <- 'ARU-1801_Ph1_01'
+# args$patient                  <- 'pPatient1'
+# args$trial                    <- 'betaThalassemia_sloanKettering_Sadelain'
 # args$outputDir                <- 'output'
 # args$richPopCells             <- 'PBMC,T CELLS,B CELLS'
 # args$cellTypeNameConversions  <- './cellTypeNameConversions.tsv'
 # args$numClones                <- 10
 # args$use454ReadLevelRelAbunds <- FALSE
 # args$legacyData               <- '/home/everett/projects/gtVISA_dashboard/data/legacyData.rds'
-### args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
+# ## args$allowedSamples           <- 'sampleLists/TET2.PMID29849141.samples'
 
 
 # Convert comma delimited string to vector.
@@ -63,9 +64,20 @@ dbDisconnect(dbConn)
 
 # Retreive all samples with current intSite data.
 dbConn        <- dbConnect(MySQL(), group = args$intSiteDB)
-intSiteSamples <- unique(gsub('\\-\\d+$', '', unname(unlist(dbGetQuery(dbConn, 'select sampleName from samples')))))
+o <- dbGetQuery(dbConn, 'select sampleName, miseqid from samples')
+
+sampleToRunDate <- tibble(GTSP = gsub('\\-\\d+$', '', o$sampleName), 
+                           date = lubridate::ymd(stringr::str_extract(o$miseqid, '\\d+'))) %>%
+                    group_by(GTSP) %>% 
+                    summarise(date = max(date)) %>% 
+                    ungroup()
+
+
+intSiteSamples <- unique(gsub('\\-\\d+$', '', o$sampleName))
 dbDisconnect(dbConn)
 
+# Limit samples with intSite data to only those samples associated with this trial / patient.
+intSiteSamples <- intSiteSamples[intSiteSamples %in% sampleIDs]
 
 # Read in legacy data.
 intSites   <- GRanges()
@@ -89,7 +101,7 @@ if(any(sampleIDs %in% intSiteSamples)){
   intSites <- legacyData
   legacyData <- GRanges()
 } else {
-  stop('There is no Illumina or Legacy data to work with.')
+  stop('There is no Illumina or legacy data to work with.')
 }
 
 
@@ -186,10 +198,12 @@ if( nrow(sites.multi) > 0 ){
 }
 
 
-
 intSites <- gt23::collapseReplicatesCalcAbunds(intSites.std.reps) %>%
             gt23::annotateIntSites() %>%
             data.frame()
+
+# Identify which samples were processed but did not return any intSites.
+failedIntSiteSamples <- intSiteSamples[! intSiteSamples %in% intSites$GTSP]
 
 # Add annotations to replicate level data.
 intSites.std.reps <- data.frame(intSites.std.reps)
@@ -313,6 +327,19 @@ summaryTable <- group_by(d, GTSP) %>%
                arrange(timePointDays) %>%
                select(-timePointDays)
 
+# Add failed samples.  JKE
+if(length(failedIntSiteSamples) > 0){
+  f <- tibble(GTSP = failedIntSiteSamples, dataSource = NA, Timepoint = NA, CellType = NA,
+              TotalReads = NA, InferredCells = NA, UniqueSites = NA, Gini = NA, Chao1 = NA, Shannon = NA, Pielou = NA,
+              UC50 = NA, Included = NA)
+  
+  f$Timepoint <- sampleData[match(f$GTSP, sampleData$SpecimenAccNum),]$Timepoint
+  f$CellType <- sampleData[match(f$GTSP, sampleData$SpecimenAccNum),]$CellType
+  #f$timePointDays <- gt23::expandTimePoints(f$Timepoint)$timePointDays
+  summaryTable <- dplyr::bind_rows(summaryTable, f)
+}
+
+summaryTable$runDate <- sampleToRunDate[match(summaryTable$GTSP, sampleToRunDate$GTSP),]$date
 
 # Now that we have report all the samples, remove those which will not be used for plotting.
 d <- subset(d, include == 'yes')
@@ -404,15 +431,15 @@ d.wide$patient         <- args$patient
 abundantClones$patient <- args$patient
 summaryTable$patient   <- args$patient
 
-write.table(sampleData, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'sampleData.csv'))
-write.table(d, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'intSites.csv'))
-write.table(d.wide, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'intSites_wideView.csv'))
-write.table(d.reps, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'intSites_replicates.csv'))
-write.table(summaryTable, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'summary.csv'))
-write.table(abundantClones, sep = ',', col.names = TRUE, row.names = FALSE, quote = FALSE, file = file.path(archivePath, 'abundantClones.csv'))
+write.table(sampleData, sep = ',', col.names = TRUE, row.names = FALSE, quote = TRUE, file = file.path(archivePath, 'sampleData.csv'))
+write.table(d, sep = ',', col.names = TRUE, row.names = FALSE, quote = TRUE, file = file.path(archivePath, 'intSites.csv'))
+write.table(d.wide, sep = ',', col.names = TRUE, row.names = FALSE, quote = TRUE, file = file.path(archivePath, 'intSites_wideView.csv'))
+write.table(d.reps, sep = ',', col.names = TRUE, row.names = FALSE, quote = TRUE, file = file.path(archivePath, 'intSites_replicates.csv'))
+write.table(summaryTable, sep = ',', col.names = TRUE, row.names = FALSE, quote = TRUE, file = file.path(archivePath, 'summary.csv'))
+write.table(abundantClones, sep = ',', col.names = TRUE, row.names = FALSE, quote = TRUE, file = file.path(archivePath, 'abundantClones.csv'))
 write(date(), file = file.path(archivePath, 'timeStamp.txt'))
 
-rmarkdown::render(args$reportFile, 
+rmarkdown::render(args$reportFile,
                   output_file = paste0(args$outputDir, '/', args$patient, '/', args$patient, '.pdf'),
                   params = list('date'  = format(Sys.Date(), format="%B %d, %Y"),
                                 'title' = paste0('Analysis of integration site distributions and relative clonal abundance for subject ', args$patient)))
