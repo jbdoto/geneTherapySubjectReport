@@ -206,3 +206,8 @@ https://anaconda.org/conda-forge/r-vegan/2.4_3/download/linux-64/r-vegan-2.4_3-r
 https://anaconda.org/r/r-devtools/1.11.1/download/linux-64/r-devtools-1.11.1-r3.3.1_0.tar.bz2
 https://anaconda.org/conda-forge/r-withr/2.1.1/download/linux-64/r-withr-2.1.1-r3.3.2_0.tar.bz2
 https://anaconda.org/conda-forge/r-hmisc/4.0_3/download/linux-64/r-hmisc-4.0_3-r3.3.2_0.tar.bz2
+https://anaconda.org/conda-forge/r-formula/1.2_1/download/linux-64/r-formula-1.2_1-r3.3.2_0.tar.bz2
+https://anaconda.org/conda-forge/r-acepack/1.4.1/download/linux-64/r-acepack-1.4.1-r3.3.2_0.tar.bz2
+https://anaconda.org/conda-forge/r-gridextra/2.2.1/download/linux-64/r-gridextra-2.2.1-r3.3.2_0.tar.bz2
+https://anaconda.org/conda-forge/r-htmltable/1.9/download/linux-64/r-htmltable-1.9-r3.3.2_0.tar.bz2
+https://anaconda.org/conda-forge/r-checkmate/1.8.5/download/linux-64/r-checkmate-1.8.5-r3.3.2_0.tar.bz2
