@@ -1,0 +1,18 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: ReportDockerECRRepositoryCreate
+
+Resources:
+  ReportECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: report
+      Tags:
+        - Key: "Name"
+          Value: "report"
+
+Outputs:
+  Arn:
+    Value: !GetAtt ReportECRRepository.Arn
+
+# aws cloudformation create-stack --stack-name IntSiteCallerReportECRRepository --template-body file://repository.yml  --profile=jdoto-ab3 --region=us-east-1
